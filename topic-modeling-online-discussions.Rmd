@@ -1,0 +1,402 @@
+---
+title: "tarea4"
+author: "virlan valentino"
+date: "2025-12-16"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+library(RedditExtractoR)
+library(tidyverse)
+library(tm)
+library(stringr)
+library(dplyr)
+library(slam)
+library(topicmodels)
+
+```
+
+## Introducción
+
+En este trabajo analizo un conjunto de textos reales mediante modelos de modelización temática, con el objetivo de identificar automáticamente los principales temas presentes en los documentos seleccionados. Como objeto de estudio he elegido las discusiones online, ya que permiten observar opiniones, valoraciones y argumentos espontáneos, no estructurados y producidos de forma naturale por los usuarios. Tras la recopilación de los textos, preparo el corpus para el análisis y aplico dos modelos LDA con diferente número de tópicos, comparando los resultados obtenidos y centrándome principalmente en la interpretación cualitativa de los temas identificados.
+
+## Extracción del corpus
+
+Para el trabajo decidí usar Reddit porque es un foro en línea o social que aloja discusiones en sus subreddis muy heterogéneos y espontáneos sobre temas tecnológicos/ económicos/ políticos/ geográficos y sobre muchos otros temas, entonces siempre lo he preferido a Twitter. Para construir el corpus elegí trabajar con Reddit, utilizando una biblioteca pública disponible en R (RedditExtractoR) que permite extraer automáticamente contenidos públicos de la plataforma sin utilizar la API oficial, manteniendo el proceso de webscraping bastante simple y replicable. Para evitar repetir este proceso en cada ejecución del informe y garantizar la reproducibilidad del análisis, la fase de extracción de los comentarios se realizó mediante un script separado. El corpus resultante se guardó localmente y, en el presente documento, los datos se cargan directamente desde un archivo previamente generado. De este modo se reduce el tiempo de ejecución y se evita depender del estado momentáneo de la plataforma durante la compilación del informe. Una vez definido el modo de recogida de datos, he seleccionado tres subreddit diferentes , technology, space y TeslaMotors,  para tener contenidos que van desde la tecnología en general, al espacio, hasta discusiones más específicas relacionadas con una empresa. Una vez que elegí los subreddits, recogí las URLs de los hilos con más votos del mes pasado. La selección de los hilos más votados puede variar con el tiempo, pero esto no afecta al objetivo exploratorio del análisis temático. De esta manera me aseguro de trabajar en discusiones relevantes y con un buen nivel de participación, así que tengo muchos hilos sobre los cuales trabajar. Para cada subreddit entonces salvo todos los hilos encontrados y los uní en un solo objeto. Después de recopilar todas las URL, me aseguro de eliminar los duplicados y limito el número total de hilos a 200, para mantener el proceso de recopilación de datos manejable desde un punto de vista computacional, pero sin perder variedad temática en el corpus.
+
+### Script de extracción de datos (no ejecutado en este informe)
+
+
+```{r hilos_reddit, eval=FALSE}
+# Defino los subreddits desde los que extraeré los hilos
+subreddits <- c("technology", "space", "TeslaMotors")
+
+# Creo un tibble vacío para almacenar las URLs de los hilos
+all_urls <- tibble()
+
+# Recorro cada subreddit para buscar los hilos más votados del último mes
+for (sub in subreddits) {
+  cat("Buscando hilos en r/", sub, "\n")
+  
+  urls_sub <- find_thread_urls(
+    subreddit = sub,
+    sort_by   = "top",    # hilos más votados
+    period    = "month"   # último mes
+  )
+  
+  # Añado una columna con el nombre del subreddit de origen
+  urls_sub <- urls_sub %>%
+    mutate(subreddit = sub)
+  
+  # Combino los resultados de todos los subreddits
+  all_urls <- bind_rows(all_urls, urls_sub)
+}
+
+# Inspección inicial de las URLs recopiladas
+glimpse(all_urls)
+
+```
+Después de recopilar las URL de los hilos, compruebo la estructura de los datos obtenidos. En esta fase hay unas quinientas hebras en total, cada una acompañada de información como la fecha, el título, el número de comentarios y el subreddit de origen.
+
+```{r elemino, eval=FALSE}
+# Elimino URLs duplicadas
+thread_urls <- unique(all_urls$url)
+length(thread_urls)
+
+# Limito el número de hilos a un máximo de 200
+thread_urls <- thread_urls[1:200]   # si hay menos de 200, no ocurre nada
+length(thread_urls)
+```
+
+En total, se detectan algo más de 500 hebras únicas. Para que el proceso de recolección y análisis sea computacionalmente manejable, limito el número de subprocesos considerados a 200, seleccionando los primeros resultados obtenidos.
+
+### Descarga de los comentarios de los hilos
+
+Después de identificar los hilos que deben analizarse, paso a extraer el contenido textual en sí. En particular, para cada hilo recupero todos los comentarios asociados, que constituyen las unidades textuales del corpus. Antes de continuar con la eliminación completa, verifico la estructura del objeto devuelto por la función de raspado en un solo hilo para verificar que los comentarios y metadatos se hayan descargado correctamente.
+
+```{r descarga, eval=FALSE}
+# Selecciono un hilo de prueba para inspeccionar la estructura del contenido descargado
+test_url <- thread_urls[1]
+
+# Descargo el contenido del hilo de prueba
+test_content <- get_thread_content(test_url)
+
+# Inspecciono la estructura del objeto devuelto (hilo y comentarios)
+str(test_content)
+
+# Creo un tibble vacío para almacenar todos los comentarios
+all_comments <- tibble()
+
+# Recorro cada URL de hilo para descargar sus comentarios
+for (u in thread_urls) {
+  cat("Descargando hilo:", u, "\n")
+  
+  # Intento descargar el contenido del hilo; si falla, continúo con el siguiente
+  tmp <- tryCatch(
+    get_thread_content(u),
+    error = function(e) NULL
+  )
+  
+  # Si la descarga no devuelve resultados, paso al siguiente hilo
+  if (is.null(tmp)) next
+  
+  # Extraigo el data frame de comentarios del hilo
+  comments_df <- tmp$comments
+  
+  # Si el hilo no contiene comentarios, lo omito
+  if (is.null(comments_df) || nrow(comments_df) == 0) next
+  
+  # Convierto los comentarios a tibble y añado la URL del hilo de origen
+  comments_df <- as_tibble(comments_df) %>%
+    mutate(thread_url = u)
+  
+  # Añado los comentarios al conjunto total
+  all_comments <- bind_rows(all_comments, comments_df)
+  
+  # Pausa entre solicitudes para evitar sobrecargar el servidor
+  Sys.sleep(1.5)
+}
+```
+Durante la extracción de algunos subprocesos ocasionalmente pueden ocurrir limitaciones temporales en las solicitudes al servidor, lo que conduce a no descargar una pequeña parte del contenido. Esto no compromete el análisis, ya que el corpus definitivo es aún amplio y suficientemente variado para el objetivo exploratorio de la obra.
+
+```{r cargar_datos, echo=TRUE}
+# Cargo el corpus de comentarios previamente descargado
+all_comments <- readRDS("data/all_comments.rds")
+
+#verifica final
+obj <- readRDS("data/all_comments.rds")
+nrow(obj)
+names(obj)
+
+```
+
+El corpus completo de comentarios fue obtenido previamente mediante un script separado (`01_reddit_scraping.R`) y almacenado localmente en un archivo binario en formato `.rds`, que contiene un único objeto de R serializado. En este informe los datos se cargan directamente desde dicho archivo.
+
+```{r ispeccion, echo=TRUE}
+
+# Número total de comentarios descargados
+nrow(all_comments)
+
+# Inspección inicial de la estructura del conjunto de comentarios
+glimpse(all_comments)
+
+# Nombres de las variables disponibles en el corpus de comentarios
+names(all_comments)
+
+```
+
+Al final de la fase de recogida obtengo un corpus formado por decenas de miles de comentarios, que constituyen la materia prima del análisis. El gran número de observaciones asegura una buena variedad de contenidos y una base adecuada para la aplicación de los modelos temáticos. Cada comentario va acompañado de metadatos básicos, como el autor, la fecha, el puntaje y el identificador del subproceso de origen. En este análisis solo uso el contenido textual de las observaciones, mientras que las demás variables se conservan con fines descriptivos. El número exacto de comentarios recogidos no es fijo y puede variar entre diferentes ejecuciones del código, ya que depende del estado de las discusiones en el momento de la extracción y de posibles limitaciones temporales en las solicitudes. Esta variabilidad no afecta a la finalidad del análisis, que es exploratorio y se centra en identificar la estructura temática general del corpus.
+
+
+### Filtrado inicial y definición de los documentos
+
+Después de obtener el corpus sin procesar, procedo a una primera fase de filtrado para definir de manera más precisa las unidades textuales a analizar. En particular, considero cada comentario como un documento y elimino aquellos que son demasiado breves, ya que apenas contienen información temática relevante. En esta etapa también calculo la duración de cada comentario en términos de número de palabras, con el fin de aplicar un criterio de selección mínimo.
+
+```{r filtrado, echo=TRUE}
+# Defino los documentos del corpus a partir de los comentarios descargados
+reddit_docs <- all_comments %>%
+  # Elimino comentarios con contenido faltante
+  filter(!is.na(comment)) %>%
+  
+  # Creo una variable de texto y calculo la longitud de cada comentario en número de palabras
+  mutate(
+    text = comment,
+    word_count = str_count(text, "\\w+")
+  ) %>%
+  
+  # Elimino comentarios demasiado cortos (menos de 5 palabras)
+  filter(word_count >= 5) %>%
+  
+  # Conservo únicamente la columna de texto para el análisis posterior
+  select(text)
+
+# Número total de documentos tras el filtrado inicial
+nrow(reddit_docs)
+
+# Inspección de los primeros documentos del corpus
+head(reddit_docs$text, 3)
+
+```
+Después de esta fase inicial de filtración, se obtiene un conjunto de documentos textuales que consta de decenas de miles de comentarios. La inspección de algunos ejemplos confirma que los textos conservados son suficientemente largos y contienen información sustancial, lo que los hace adecuados para análisis temáticos posteriores. Esta etapa reduce el ruido generado por comentarios extremadamente cortos o desinformativos y mejora la calidad del corpus final.
+
+## Preprocesamiento del texto y construcción del corpus
+
+A partir de los documentos textuales obtenidos después del filtrado inicial, procedo con una fase de procesamiento previo del texto para que los documentos sean adecuados para la construcción de la representación final. Por razones computacionales y de interpretabilidad de los resultados, trabajo sobre una muestra aleatoria de tamaño fijo del corpus, manteniendo sin embargo una numerosidad suficiente para preservar la variedad temática de los contenidos. Después aplico una serie de operaciones de limpieza de texto estándar, diseñadas para reducir el ruido y normalizar el vocabulario.
+
+```{r cars, echo=TRUE}
+# Fijo la semilla para garantizar la reproducibilidad del muestreo
+set.seed(123)
+
+# Extraigo una muestra aleatoria de documentos para reducir el coste computacional
+reddit_docs_sample <- reddit_docs %>%
+  slice_sample(n = 8000)
+
+# Verifico el tamaño de la muestra
+nrow(reddit_docs_sample)
+
+# Creo el corpus de texto a partir de la muestra seleccionada
+corp <- VCorpus(VectorSource(reddit_docs_sample$text))
+
+# Defino una función para eliminar URLs de los textos
+remove_urls <- content_transformer(function(x) {
+  str_remove_all(x, "http[s]?://\\S+")
+})
+
+# Aplico una serie de pasos de preprocesamiento estándar
+corp_clean <- corp %>%
+  tm_map(remove_urls) %>%                         # elimino enlaces web
+  tm_map(content_transformer(tolower)) %>%        # convierto todo a minúsculas
+  tm_map(removePunctuation) %>%                   # elimino signos de puntuación
+  tm_map(removeNumbers) %>%                       # elimino números
+  tm_map(removeWords, stopwords("english")) %>%   # elimino stopwords en inglés
+  tm_map(stripWhitespace)                         # elimino espacios en blanco extra
+
+# Elimino términos específicos del contexto de Reddit poco informativos
+extra_stop <- c("reddit", "thread", "comment")
+corp_clean <- corp_clean %>%
+  tm_map(removeWords, extra_stop)
+
+# Elimino palabras frecuentes pero poco informativas en el lenguaje coloquial
+extra_stop2 <- c(
+  "just","like","can","will","one","get","dont","even","now",
+  "years","year","time","much","many","use","used",
+  "want","know","see","make","going","still","back","way",
+  "people","also","really","think","thats","cant"
+)
+
+# Aplico la segunda lista de stopwords personalizada
+corp_clean2 <- corp_clean %>%
+  tm_map(removeWords, extra_stop2)
+
+
+```
+
+El pre-procesamiento incluye la eliminación de URL, la conversión en minúsculas, la eliminación de puntuación y número, y la eliminación de palabras de interrupción en inglés. Junto a estas operaciones hay una lista de stopwords adicionales, construida de forma exploratoria, para eliminar términos muy frecuentes pero poco informativos en el contexto de las discusiones en línea en una plataforma. Al final de esta fase obtengo un corpus textual más limpio y homogéneneo, listo para la construcción de la matriz documento-termino y para la aplicación de modelos de modelado tópico.
+
+```{r matriz_documento–término, echo=TRUE}
+# Construyo la matriz documento–término a partir del corpus preprocesado
+dtm2 <- DocumentTermMatrix(corp_clean2)
+
+# Elimino términos extremadamente raros para reducir la esparsidad de la matriz
+dtm2 <- removeSparseTerms(dtm2, 0.99)
+
+# Calculo el número total de términos por documento
+row_totals2 <- row_sums(dtm2)
+
+# Elimino los documentos que han quedado vacíos tras el filtrado
+dtm2_nonempty <- dtm2[row_totals2 > 0, ]
+```
+
+Esta representación permite filtrar términos extremadamente raros y eliminar documentos vacíos, lo que garantiza una base adecuada para la estimación de modelos LDA.
+
+## Ajuste de modelos LDA y comparación entre K = 5 y K = 10
+
+A partir de la matriz documento-término construida previamente, paso a la aplicación de los modelos de modelado temático por medio de LDA. En particular, estimo dos modelos LDA estándar que difieren en el número de tópicos, con el fin de comparar estructuras temáticas de diferente granularidad. Esta opción permite una evaluación de cómo varía la interpretabilidad del tema según aumenta el número de temas.
+
+```{r lda, echo=TRUE}
+# Ajusto un modelo LDA con 5 tópicos
+set.seed(123)
+lda2_k5 <- LDA(dtm2_nonempty, k = 5, control = list(seed = 123))
+
+# Ajusto un modelo LDA con 10 tópicos
+set.seed(123)
+lda2_k10 <- LDA(dtm2_nonempty, k = 10, control = list(seed = 123))
+
+# Extraigo las palabras más probables de cada tópico (matriz beta)
+terms_k5  <- terms(lda2_k5, 10)
+terms_k10 <- terms(lda2_k10, 10)
+
+# Visualizo los términos más representativos de cada tópico
+terms_k5
+terms_k10
+```
+
+El análisis de los términos más probables asociados con cada tema demuestra que los temas identificados se caracterizan por un vocabulario predominantemente general y coloquial, típico de las discusiones online. Palabras como work, company, money, good y need se repiten en varios tópicos, sugiriendo una fuerte superposición semántica entre las discusiones y una estructura temática no rígidamente separada. En el modelo con K = 5, los temas son más amplios y agregan conversaciones heterogéneas alrededor de macro-temas recurrentes, como el trabajo, las empresas tecnológicas y la dinámica económica. Esta configuración favorece una lectura más compacta pero menos detallada del corpus. En contraste, el modelo K = 10 presenta una mayor granularidad, separando parcialmente algunos subtemas específicos, como el uso de datos, servicios digitales, plataformas tecnológicas o dispositivos móviles. Sin embargo, también en este caso siguen existiendo superposiciones léxicas que reflejan el carácter informal de los debates analizados. En general, la comparación entre las dos configuraciones pone de manifiesto que un número reducido de temas mejora la síntesis global, mientras que un número mayor permite explorar matices temáticos más específicos, aunque a costa de una menor claridad interpretativa. Dado el carácter exploratorio del análisis y la ausencia de covariables sociales o temporales fiables en el corpus, se ha optado por modelos LDA clásicos, sin recurrir a STM, cuya aplicación resultaría metodológicamente innecesaria en este contexto.
+
+
+### Interpretación y etiquetado de los tópicos (K = 5)
+
+Sobre la base de las palabras más frecuentes asociadas a cada tema y los ejemplos de documentos representativos, interpreto los cinco temas como sigue.
+
+#### Tema 1 – Economía digital y consumo tecnológico
+Este tema se caracteriza por términos como money, need, phone, google y right, que remiten a discusiones sobre el impacto económico de la tecnología en la vida cotidiana. Los comentarios incluidos en este tópico abordan con frecuencia cuestiones relacionadas con el coste de los servicios digitales, el consumo de dispositivos tecnológicos y el papel de las grandes empresas tecnológicas. El tono suele ser crítico y evaluativo, lo que refleja la preocupación por la sostenibilidad económica y las prácticas comerciales de la industria.
+
+#### Tema 2 – Opiniones informales sobre trabajo y experiencia online
+
+El Tema 2 recoge palabras como work, good, better, internet y already, típicas de comentarios coloquiales y valorativos. Este tópico agrupa discusiones informales en las que los usuarios expresan opiniones generales sobre el trabajo, la experiencia cotidiana en Internet y el funcionamiento de servicios digitales. Se trata de discursos menos técnicos y más basados en percepciones personales, a menudo formulados de manera espontánea y no estructurada.
+
+#### Tema 3 – Crítica general a empresas y dinámicas económicas
+
+El Tema 3 presenta términos como money, companies, work, always y actually, que indican un conjunto de comentarios argumentativos y frecuentemente críticos. En este tópico predominan reflexiones sobre el comportamiento de las empresas tecnológicas, las dinámicas económicas asociadas al sector y las consecuencias sociales percibidas de estas prácticas. El tono es a menudo escéptico y confrontativo, con juicios explícitos sobre modelos de negocio y promesas tecnológicas.
+En general, la solución con K = 5 devuelve una estructura temática coherente y fácilmente interpretable, donde cada tema representa un área semántica.
+
+#### Tema 4 – Tecnología, datos y servicios digitales
+
+Este tema está asociado con palabras como data, tech, company, work y need, y se centra en discusiones relativas al funcionamiento de tecnologías digitales, el uso de datos y los servicios ofrecidos por las empresas del sector. Los comentarios incluidos suelen adoptar un tono más racional y explicativo, abordando cuestiones de innovación tecnológica, gestión de infraestructuras digitales y cambios en el ecosistema tecnológico.
+
+#### Tema 5 – Software, sistemas y evaluación pragmática de la tecnología
+
+El Tema 5 se caracteriza por términos como windows, linux, system, run y companies, lo que indica una orientación más técnica y práctica. Este tópico agrupa comentarios centrados en software, sistemas operativos y herramientas digitales, a menudo evaluados en función de su utilidad, rendimiento y fiabilidad. Junto a estos aspectos técnicos, aparecen también consideraciones sobre las estrategias de las empresas que desarrollan y comercializan estas tecnologías, con un enfoque claramente pragmático.
+
+En conjunto, los tópicos identificados no representan categorías rígidas, sino agrupaciones flexibles de discursos que reflejan la naturaleza informal, evaluativa y transversal de las interacciones en plataformas online.
+
+### Comparación entre K = 5 y K = 10
+
+Al aumentar el número de temas a K = 10, el modelo produce una subdivisión más fina del corpus, lo que hace surgir temas más específicos como el uso de dispositivos móviles, el papel de empresas individuales (por ejemplo, Google o Netflix) o aspectos particulares de la experiencia del usuario. Sin embargo, en comparación con la solución de K = 5, los tópicos están más fragmentados y en algunos casos parcialmente superpuestos. Algunos temas del modelo de 5 tópicos se dividen en varios subtopicos, lo que dificulta la interpretación general. Por esta razón, aun reconociendo que K = 10 permite una mayor granularidad, considero la solución con K = 5 más adecuada a los objetivos de este análisis, que es de tipo exploratorio y tiene como objetivo identificar la estructura temática general del corpus en lugar de micro-temas muy específicos.
+
+## Ejemplos representativos de los tópicos
+
+Después de analizar los temas a través de las palabras más probables, paso a examinar algunos documentos concretos para cada tema. El objetivo es comprobar si la interpretación propuesta es coherente incluso a nivel textual y mostrar ejemplos de observaciones en las que un tema en particular es claramente dominante.
+
+```{r ejemplos}
+# Defino una función para extraer ejemplos representativos por tópico
+extract_examples <- function(lda_model, texts, valid_idx, n_examples = 2) {
+  
+  # Extraigo la matriz theta (distribución de tópicos por documento)
+  theta <- posterior(lda_model)$topics
+  
+  # Creo un data frame con el texto, el tópico dominante y su probabilidad máxima
+  doc_topics <- tibble(
+    text = texts[valid_idx],
+    dominant_topic = apply(theta, 1, which.max),
+    max_prob = apply(theta, 1, max)
+  )
+  
+  # Selecciono los documentos más representativos de cada tópico
+  doc_topics %>%
+    group_by(dominant_topic) %>%
+    arrange(desc(max_prob), .by_group = TRUE) %>%
+    slice(1:n_examples) %>%
+    ungroup()
+}
+
+# Identifico los documentos válidos (con al menos un término en la DTM)
+valid_docs_idx <- which(row_totals2 > 0)
+
+# Extraigo ejemplos representativos para el modelo con K = 5
+examples_k5 <- extract_examples(
+  lda_model = lda2_k5,
+  texts     = reddit_docs_sample$text,
+  valid_idx = valid_docs_idx,
+  n_examples = 2
+)
+
+# Visualizo los ejemplos seleccionados
+examples_k5
+
+# Verifico el número total de ejemplos y su distribución por tópico
+nrow(examples_k5)
+table(examples_k5$dominant_topic)
+```
+
+```{r t1}
+# Inspección de ejemplos por cada tópico
+examples_k5 %>% filter(dominant_topic == 1)
+```
+Los documentos más representativos del Tema 1 son comentarios muy articulados y fuertemente críticos, en los que los usuarios reflexionan sobre el papel de las grandes empresas tecnológicas y sobre las lógicas de beneficio que impulsan las plataformas digitales. En particular, emergen discusiones que vinculan el uso de la inteligencia artificial, las prácticas comerciales agresivas y los instrumentos financieros como el "buy now, pay later" a una percepción de explotación sistemática de los usuarios. El tono es a menudo polémico y desilusionado, y pone de manifiesto una desconfianza generalizada hacia el sistema económico y corporativo, confirmando la interpretación del tema como centrado en las dinámicas económicas, empresariales y sociales.
+
+
+```{r t2}
+# Inspección de ejemplos por cada tópico
+examples_k5 %>% filter(dominant_topic == 2)
+```
+Los documentos más representativos del tema 2 son debates de naturaleza más técnica y argumentativa, centrados en temas de seguridad informática, gestión de dispositivos y operación de sistemas de software. En estos comentarios, los usuarios explican y cuestionan conceptos como la gestión de dispositivos móviles, la privacidad de los niños y el uso de tecnologías de monitoreo, distinguiendo entre implementaciones seguras y soluciones potencialmente peligrosas. Junto a estos aspectos también surgen reflexiones sobre el significado real de algunas etiquetas tecnológicas, como la de "AI agent", que se describe críticamente como una extensión de arquitecturas de software ya existentes más que como una tecnología radicalmente nueva. En general, se puede interpretar que el tema se centra en cuestiones de tecnología, seguridad y gobernanza de los sistemas digitales, con un enfoque más racional y menos emotivo que otros temas.
+
+```{r t3}
+# Inspección de ejemplos por cada tópico
+examples_k5 %>% filter(dominant_topic == 3)
+```
+Los documentos asociados con el Tema 3 se caracterizan por un tono fuertemente crítico y polémico hacia la industria tecnológica y sus principales actores. En estos comentarios surgen reflexiones que vinculan la expansión del sector tecnológico con consecuencias sociales negativas, como el aumento del coste de vida, la transformación de los territorios y el conflicto con las comunidades locales. Al mismo tiempo, el tema incluye una crítica explícita a las narraciones de los medios sobre la inteligencia artificial, en particular a la idea de que la IA está destinada a reemplazar masivamente el trabajo humano. Los usuarios cuestionan tanto las capacidades reales de la tecnología como la fiabilidad de las declaraciones de CEO y medios especializados, descritos como interesados más en la especulación que en una información precisa. En general, el Tema 3 puede interpretarse como un conjunto de discursos que expresan desconfianza hacia el tecno-optimismo, denunciando las promesas irrealistas del sector y las repercusiones económicas y sociales percibidas como desleales o dañinas.
+
+```{r t4}
+# Inspección de ejemplos por cada tópico
+examples_k5 %>% filter(dominant_topic == 4)
+```
+Los documentos más representativos del Tema 4 se centran en cuestiones de privacidad, derechos de los consumidores y regulación de las infraestructuras digitales, especialmente en el sector de las telecomunicaciones. Por un lado, surgen discusiones sobre servicios innovadores que buscan minimizar la recopilación de datos personales, proponiendo modelos alternativos a la ortodoxia dominante basada en la vigilancia y la monetización de la información de los usuarios. Por otro lado, el tema incluye ejemplos de conflictos entre usuarios y grandes operadores telefónicos, en los que se destacan prácticas consideradas incorrectas o poco transparentes, como el cambio retroactivo de las condiciones contractuales o las restricciones sobre el uso de los dispositivos adquiridos. En estos casos, el recurso a instrumentos legales y reguladores se presenta como un medio para reequilibrar la relación de poder entre los consumidores y las grandes empresas. En general, el tema 4 puede interpretarse como centrado en la protección de los usuarios en el ecosistema digital, relacionando la innovación tecnológica, la protección de la privacidad y el cumplimiento de las normas por parte de las grandes empresas.
+
+```{r t5}
+# Inspección de ejemplos por cada tópico
+examples_k5 %>% filter(dominant_topic == 5)
+```
+Los documentos asociados con el Tema 5 giran en torno a una evaluación pragmática de la inteligencia artificial, prestando especial atención a los modelos de negocio, los costes y las áreas de uso que se consideran realmente útiles. En estos comentarios, los usuarios comparan las estrategias económicas de las empresas que operan en el sector de la IA, destacando la diferencia entre plataformas sostenibles y servicios que, al menos a corto plazo, parecen generar pérdidas por cada usuario adquirido. Al mismo tiempo, existe una clara distinción entre las aplicaciones que se consideran legítimas y productivas, como el apoyo a la programación y el desarrollo de software, y otros usos de IA que suscitan mayor incomodidad o escepticismo, como la generación de imágenes, vídeos o contenidos comunicativos. El tono general es menos ideológico que otros tópicos y más orientado a la experiencia personal y a la eficacia práctica de las herramientas. En general, el tema 5 puede interpretarse como centrado en una evaluación de costo-beneficio de la IA, donde la adopción de tecnología está impulsada por la utilidad concreta más que por expectativas especulativas o narrativas promocionales.
+
+## Reflexiones finales
+
+En este trabajo se ha llevado a cabo un análisis exploratorio de modelización temática sobre un corpus de comentarios extraídos de Reddit, con el objetivo de identificar patrones recurrentes en las discusiones relacionadas con tecnología, empresas digitales e inteligencia artificial. A partir de una representación documento–término cuidadosamente construida y de un preprocesamiento razonado del texto, ha sido posible aplicar modelos LDA y analizar tanto su salida cuantitativa como su interpretación cualitativa. La comparación entre las configuraciones con K = 5 y K = 10 muestra claramente el compromiso existente entre granularidad y claridad interpretativa. Mientras que el modelo con K = 10 permite una segmentación más fina de algunos subtemas específicos, también genera una mayor fragmentación y solapamiento entre tópicos. En cambio, la solución con K = 5 ofrece una estructura temática más estable y coherente, adecuada para una lectura exploratoria del corpus y para la identificación de grandes áreas semánticas. El análisis de ejemplos representativos de documentos confirma que los tópicos identificados no corresponden a categorías rígidas, sino a conjuntos de discursos informales y transversales, característicos de las interacciones en plataformas online. Los temas emergentes reflejan preocupaciones recurrentes sobre el papel de las grandes empresas tecnológicas, las dinámicas económicas, la privacidad, el trabajo y el impacto real de la inteligencia artificial, a menudo expresadas en tonos críticos, escépticos o pragmáticos. En conjunto, este trabajo pone de manifiesto tanto el potencial como las limitaciones del topic modeling aplicado a textos generados por usuarios. Si bien los modelos LDA permiten identificar regularidades temáticas de forma sistemática, su interpretación requiere necesariamente una lectura cualitativa atenta de los contenidos. En este sentido, la integración entre análisis cuantitativo y análisis cualitativo resulta fundamental para comprender la estructura temática global del corpus y para extraer conclusiones significativas en un contexto exploratorio.
+
+
+--------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
