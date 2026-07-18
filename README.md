@@ -1,8 +1,36 @@
 # Topic Modeling of Online Discussions using LDA
 
+![R](https://img.shields.io/badge/R-276DC3?style=flat-square&logo=r&logoColor=white)
+![LDA](https://img.shields.io/badge/Model-LDA-blueviolet?style=flat-square)
+![tidytext](https://img.shields.io/badge/tidyverse-text--mining-1A162D?style=flat-square&logo=tidyverse&logoColor=white)
+![Reddit](https://img.shields.io/badge/Reddit-FF4500?style=flat-square&logo=reddit&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
+> Exploratory topic modeling of **50 000+ Reddit comments** from r/technology, r/space, and r/TeslaMotors using Latent Dirichlet Allocation in R.
+
 This repository contains an exploratory text analysis project focused on **topic modeling of online discussions** using **Latent Dirichlet Allocation (LDA)**.
 
 The project analyzes a large corpus of real user-generated texts extracted from Reddit, with the aim of automatically identifying the main latent themes present in informal online conversations.
+
+---
+
+## Pipeline
+
+```mermaid
+flowchart LR
+    A["Reddit API Scraping"] --> B["Text Preprocessing"]
+    B --> C["Tokenization"]
+    C --> D["LDA Model"]
+    D --> E["Topic Interpretation"]
+    E --> F["Model Comparison"]
+
+    style A fill:#FF4500,color:#fff,stroke:#FF4500
+    style B fill:#276DC3,color:#fff,stroke:#276DC3
+    style C fill:#276DC3,color:#fff,stroke:#276DC3
+    style D fill:#7B2D8E,color:#fff,stroke:#7B2D8E
+    style E fill:#2E8B57,color:#fff,stroke:#2E8B57
+    style F fill:#2E8B57,color:#fff,stroke:#2E8B57
+```
 
 ---
 
@@ -16,11 +44,13 @@ The analysis follows an exploratory approach and places particular emphasis on t
 
 ## Data Collection
 
-- Source: **Reddit**
-- Selected subreddits:  
-  - `technology`  
-  - `space`  
-  - `TeslaMotors`
+| Parameter | Value |
+|-----------|-------|
+| **Source** | Reddit (via `RedditExtractoR`) |
+| **Subreddits** | `r/technology` · `r/space` · `r/TeslaMotors` |
+| **Selection** | Top-voted threads from the past month |
+| **Max threads** | 200 |
+| **Raw corpus** | **50 000+ comments** |
 
 Public discussions were collected using the **RedditExtractoR** package in R, which allows scraping public Reddit content without relying on the official API.
 
@@ -51,43 +81,85 @@ For computational and interpretative reasons, the final analysis is conducted on
 
 Two standard **LDA models** were estimated and compared:
 
-- **K = 5 topics**
-- **K = 10 topics**
+| Model | Topics (K) | Characteristics |
+|-------|-----------|-----------------|
+| LDA‑5 | **K = 5** | Broader, more interpretable themes |
+| LDA‑10 | **K = 10** | Higher thematic granularity, increased overlap |
 
-The comparison highlights the trade-off between:
-- broader, more interpretable themes (K = 5)
-- higher thematic granularity but increased overlap (K = 10)
-
-The final discussion favors the **K = 5 solution**, which provides a more stable and coherent thematic structure for exploratory purposes.
+The comparison highlights the trade-off between broader interpretability and finer granularity. The final discussion favors the **K = 5 solution**, which provides a more stable and coherent thematic structure for exploratory purposes.
 
 ---
 
 ## Topic Interpretation
 
 Topics are interpreted through:
-- inspection of the most probable terms per topic
-- qualitative labeling based on semantic coherence
-- analysis of representative documents with high topic probability
+- Inspection of the most probable terms per topic
+- Qualitative labeling based on semantic coherence
+- Analysis of representative documents with high topic probability
 
 The identified themes reflect recurring discussions around:
-- digital economy and technology consumption
-- work and everyday online experiences
-- criticism of technology companies and economic dynamics
-- data, privacy, and digital services
-- pragmatic evaluations of software and artificial intelligence
+
+| Topic | Theme |
+|-------|-------|
+| 1 | Digital economy and technology consumption |
+| 2 | Work and everyday online experiences |
+| 3 | Criticism of technology companies and economic dynamics |
+| 4 | Data, privacy, and digital services |
+| 5 | Pragmatic evaluations of software and artificial intelligence |
 
 Rather than rigid categories, the topics represent **flexible clusters of discourse**, consistent with the informal and overlapping nature of online conversations.
 
 ---
 
-## Repository Contents
+## Repository Structure
 
-- `topic-modeling-lda.html`  
-  Rendered HTML report containing the full analysis, results, and interpretations.  
-  The document is written in **Spanish**.
+```
+topic-modeling-online-discussions/
+├── README.md                                    # Project documentation
+├── LICENSE                                      # MIT License
+├── .gitignore                                   # Git ignore rules
+├── reddit_scraping.R                            # Data collection script (Reddit)
+├── topic-modeling-online-discussions.Rmd         # Full R Markdown analysis
+└── topic-modeling-online-discussions.html        # Rendered HTML report (Spanish)
+```
 
-- `README.md`  
-  Project description and documentation.
+---
+
+## Quick Start
+
+### Prerequisites
+
+Install the required R packages:
+
+```r
+install.packages(c(
+  "RedditExtractoR",
+  "tidyverse",
+  "tm",
+  "stringr",
+  "dplyr",
+  "slam",
+  "topicmodels"
+))
+```
+
+### 1 — Scrape Reddit data
+
+```bash
+Rscript reddit_scraping.R
+```
+
+This will collect comments from the three subreddits and save them to `data/all_comments.rds`.
+
+### 2 — Run the analysis
+
+Open `topic-modeling-online-discussions.Rmd` in RStudio and **Knit** to HTML, or run from the command line:
+
+```bash
+Rscript -e "rmarkdown::render('topic-modeling-online-discussions.Rmd')"
+```
+
+> **Note:** The scraping step must be completed first so that `data/all_comments.rds` exists before rendering the report.
 
 ---
 
@@ -99,14 +171,14 @@ The analysis report is intentionally written in **Spanish**, reflecting the acad
 
 ## Academic Context
 
-- Exploratory text analysis  
-- Topic modeling (LDA)  
-- User-generated online content  
-- Qualitative interpretation of unsupervised models  
+- Exploratory text analysis
+- Topic modeling (LDA)
+- User-generated online content
+- Qualitative interpretation of unsupervised models
 
 ---
 
 ## Author
 
-**Virlan Valentino**  
+**Virlan Valentino**
 2025
